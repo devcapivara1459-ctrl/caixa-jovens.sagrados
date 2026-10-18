@@ -63,6 +63,8 @@ $('usersBtn').onclick=usersScreen;$('passwordBtn').onclick=changePassword;$('log
 async function boot(){try{const data=await request('/api/me');currentUser=data.user;await loadAuthenticated();}catch{loginScreen();}setInterval(async()=>{if(!currentUser||busy||locked||$('modal').open)return;try{const r=await fetch('/api/state');if(r.status===401){loginScreen();toast('Sua sessão expirou. Entre novamente.');return;}if(!r.ok)throw Error();const data=await r.json();if(data.revision!==revision){state=data.state;revision=data.revision;if(!['INPUT','SELECT'].includes(document.activeElement.tagName))render();}}catch{toast('Sem conexão com o servidor.');}},3000);}
 
 </script>
+<script src="/maps-location.js"></script>
 <script src="/pre-vendas.js"></script>
+<script src="/rotas.js"></script>
 <script>boot();</script>
 </body></html>
