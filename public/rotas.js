@@ -24,7 +24,7 @@ function deliverySegments(rows, origin) {
 }
 const renderBeforeRoutes = render;
 render = function () {
-  const admin=currentUser?.role==='admin';
+  const admin=['admin','entregador'].includes(currentUser?.role);
   let button=document.querySelector('[data-tab="routes"]');
   if(!button){button=document.createElement('button');button.dataset.tab='routes';button.textContent='Rota de entregas';document.querySelector('.tabs').append(button);}
   button.hidden=!admin;
@@ -45,6 +45,10 @@ function renderDeliveryRoute() {
   const segments=deliverySegments(selected,originPoint||origin);
   const link=(href,label)=>'<a class="route-link" href="'+esc(href)+'" target="_blank" rel="noopener noreferrer">'+label+'</a>';
   $('content').innerHTML='<section class="panel"><h2>Rota de entregas</h2><p class="muted">Selecione as entregas e ajuste a ordem com as setas. O Google Maps calcula o caminho nessa ordem; use a sugestão por proximidade para organizar as paradas. A sugestão não considera trânsito, ruas de mão única ou restrições de acesso.</p><form id="routeOriginForm" class="row" style="align-items:end;margin:16px 0"><div style="flex:1;min-width:220px"><label for="routeOrigin">Ponto de partida</label><input id="routeOrigin" required maxlength="500" value="'+esc(origin)+'"></div><div style="flex:1;min-width:220px"><label for="routeOriginLocation">Localização exata da partida (Google Maps)</label><input id="routeOriginLocation" maxlength="2000" placeholder="Cole o link ou latitude,longitude" value="'+esc(state.deliveryOriginLocation===undefined?defaultDeliveryOriginLocation:state.deliveryOriginLocation)+'"></div><button>Salvar partida</button></form><div class="row" style="margin-bottom:16px"><span class="tag">'+pending.length+' pendentes</span><span class="tag">'+(rows.length-pending.length)+' entregues</span><button id="routeSuggest" class="primary" '+(!originCoordinates?'disabled':'')+'>Sugerir ordem por proximidade</button><button id="routeSelectAll">Selecionar pendentes</button><button id="routeClearAll">Limpar seleção</button><button id="routePrint">Imprimir lista</button><select id="routeView" aria-label="Filtrar entregas" style="max-width:230px"><option value="pending">Pendentes</option><option value="all">Todas</option><option value="delivered">Entregues</option><option value="missing">Sem link de localização</option></select></div><div id="routeLinks" class="notice"><strong>'+selected.length+' paradas selecionadas</strong><div class="row" style="margin-top:12px">'+(segments.map((s,i)=>link(s.url,segments.length===1?'Abrir rota no Google Maps':'Abrir trecho '+(i+1)+' · '+s.rows.length+' paradas')).join('')||'<span>Selecione uma entrega com endereço ou coordenadas para gerar a rota.</span>')+'</div>'+(segments.length>1?'<p class="muted" style="margin-top:10px">Abra os trechos em sequência. Cada trecho continua da última parada do anterior.</p>':'')+'<p class="muted" style="margin-top:10px">Confira as paradas no Maps antes de sair. Em cada pedido, “Navegar até o cliente” usa sua posição atual no Maps.</p></div><div id="routeList"></div></section>';
+  if(currentUser?.role==='entregador'){
+    const form=$('routeOriginForm'),details=document.createElement('details'),summary=document.createElement('summary');summary.textContent='Ponto de partida · ver ou alterar';summary.style.cursor='pointer';form.before(details);details.append(summary,form);
+    $('content').querySelector('section > p').textContent='Organize as paradas, abra a rota no Google Maps e atualize a situação de cada entrega. A sugestão usa proximidade; confira o caminho no Maps antes de sair.';
+  }
   const updateList=()=>{
     const view=$('routeView').value;
     $('routeList').innerHTML=rows.filter(p=>view==='missing'?deliveryState(p)!=='delivered'&&!MapsLocation.parse(p.mapsUrl||''):view==='all'||(view==='delivered')===(deliveryState(p)==='delivered')).map(p=>{
@@ -82,7 +86,7 @@ document.addEventListener('change',event=>{
 });
 function editDeliveryLocation(id) {
   const p=activePresales().find(p=>p.id===id);
-  if(!p||!p.delivery||currentUser?.role!=='admin')return;
+  if(!p||!p.delivery||!['admin','entregador'].includes(currentUser?.role))return;
   showDialog('<h2>Localização da entrega</h2><p class="muted">'+esc(p.customer)+' · Tickets '+p.numbers.map(n=>'#'+String(n).padStart(3,'0')).join(', ')+'</p><form id="deliveryLocationForm"><label for="deliveryMaps">Link enviado pelo cliente</label><input id="deliveryMaps" required maxlength="2000" placeholder="Cole o link do Google Maps" value="'+esc(p.mapsUrl||'')+'"><label for="deliveryAddress">Endereço e referência (opcional)</label><input id="deliveryAddress" maxlength="500" value="'+esc(p.address)+'"><p id="deliveryLocationError" class="danger" role="alert" style="margin-top:12px"></p><div class="row" style="margin-top:16px"><button class="primary" id="deliveryLocationSave">Salvar localização</button><button type="button" id="deliveryLocationClose">Voltar</button></div></form>');
   $('deliveryLocationClose').onclick=()=>$('modal').close();
   $('deliveryLocationForm').onsubmit=async event=>{
@@ -95,7 +99,7 @@ function editDeliveryLocation(id) {
   };
 }
 document.addEventListener('click',async event=>{
-  const b=event.target.closest('button');if(!b||currentUser?.role!=='admin'||busy)return;
+  const b=event.target.closest('button');if(!b||!['admin','entregador'].includes(currentUser?.role)||busy)return;
   if(b.dataset.routeEdit)return editDeliveryLocation(b.dataset.routeEdit);
   if(b.dataset.routeUp||b.dataset.routeDown){
     const id=b.dataset.routeUp||b.dataset.routeDown, rows=orderedDeliveries().filter(p=>deliveryState(p)!=='delivered');

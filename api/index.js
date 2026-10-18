@@ -3,6 +3,7 @@ const http=require('http'),fs=require('fs'),path=require('path'),os=require('os'
 const validate=require('../validate.cjs'),{project,permitted}=require('../acesso.cjs');
 const store=require('../banco.cjs')(process.env.DATABASE_URL),auth=require('../autenticacao.cjs')(process.env.DATABASE_URL);
 const receipts=require('../comprovantes.cjs')(process.env.DATABASE_URL);
+const delivery=require('../entregas.cjs');
 const attempts=new Map();
 function reply(res,status,data,headers={}){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff',...headers});res.end(JSON.stringify(data));}
 function cookie(req){return (req.headers.cookie||'').split(';').map(s=>s.trim()).find(s=>s.startsWith('js_session='))?.slice(11)||'';}
@@ -19,6 +20,18 @@ if(url.pathname==='/api/phone-receipts'){
  return reply(res,200,await receipts.upload(paired,current.state,await body(req,710000)));
 }
 const token=cookie(req),user=await auth.user(token);if(!user)return reply(res,401,{error:'Entre com seu usuário e senha.'});
+if(user.role==='entregador'&&!['/api/me','/api/logout','/api/password','/api/delivery'].includes(url.pathname))return reply(res,403,{error:'Seu acesso é exclusivo para entregas e rotas.'});
+if(url.pathname==='/api/delivery'){
+ if(!['admin','entregador'].includes(user.role))return reply(res,403,{error:'Acesso restrito às entregas.'});
+ const current=await store.get();
+ if(req.method==='GET')return reply(res,200,{revision:current.revision,state:delivery.view(current.state)});
+ if(req.method==='POST'){
+  const data=await body(req,2*1024*1024);if(data.revision!==current.revision)return reply(res,409,{revision:current.revision,state:delivery.view(current.state)});
+  let next;try{next=delivery.merge(current.state,data.state);validate(next);}catch(e){return reply(res,403,{error:e.message});}
+  const result=await store.save(data.revision,next);return reply(res,result.ok?200:409,{revision:result.revision,state:delivery.view(result.state)});
+ }
+ return reply(res,405,{error:'Operação não disponível.'});
+}
 if(url.pathname==='/api/receipt-pair'&&req.method==='POST'){
  const data=await body(req,1000),current=await store.get();
  return reply(res,200,await receipts.pair(user,current.state,Number(data.box),`${process.env.VERCEL?'https':'http'}://${req.headers.host}`));
