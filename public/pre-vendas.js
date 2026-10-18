@@ -62,14 +62,22 @@ function renderPresales() {
   update();
 }
 function parsePresaleNumbers(value) {
-  const parts = value.trim().split(/[\s,;]+/).filter(Boolean);
+  const parts = value.trim().replace(/(\d)\s*[-–—]\s*(#?\d)/g, '$1-$2').split(/[\s,;]+/).filter(Boolean);
   const result = [];
   for (const part of parts) {
-    if (!/^#?\d+$/.test(part)) throw Error('Separe os números dos tickets por vírgula. Exemplo: 12, 13, 14.');
-    result.push(Number(part.replace('#', '')));
+    const match = part.match(/^#?(\d+)(?:-#?(\d+))?$/);
+    if (!match) throw Error('Informe números ou intervalos. Exemplo: 1-10, 15, 20-22.');
+    const first = Number(match[1]), last = match[2] === undefined ? first : Number(match[2]);
+    if (!Number.isSafeInteger(first) || !Number.isSafeInteger(last) || first < 1 || last < first || last > state.limit) throw Error('Use intervalos crescentes, entre 1 e ' + state.limit + '.');
+    for (let number = first; number <= last; number++) result.push(number);
   }
   if (!result.length || new Set(result).size !== result.length || result.some(n => !Number.isInteger(n) || n < 1 || n > state.limit)) throw Error('Informe tickets diferentes, entre 1 e ' + state.limit + '.');
   return result.sort((a, b) => a - b);
+}
+function presaleCalculatedAmount(numbers, unitPrice) {
+  const amount = numbers.length * unitPrice;
+  if (!Number.isSafeInteger(unitPrice) || unitPrice <= 0 || !Number.isSafeInteger(amount)) throw Error('Informe um valor unitário válido para calcular os tickets.');
+  return amount;
 }
 function editPresale(id) {
   if (currentUser?.role !== 'admin') return;
@@ -77,6 +85,29 @@ function editPresale(id) {
   const p = previous || {customer:'', seller:'', numbers:[], amount:0, method:'PIX', delivery:false, address:'', phone:'', date:new Date().toLocaleDateString('en-CA')};
   showDialog('<h2>' + (previous ? 'Editar' : 'Registrar') + ' pré-venda</h2><form id="presaleForm"><label for="presaleCustomer">Nome do cliente</label><input id="presaleCustomer" required maxlength="100" value="' + esc(p.customer) + '"><label for="presaleSeller">Nome do vendedor</label><input id="presaleSeller" required maxlength="100" value="' + esc(p.seller) + '"><label for="presaleNumbers">Números dos tickets</label><input id="presaleNumbers" required placeholder="Ex.: 12, 13, 14" value="' + p.numbers.join(', ') + '"><p class="muted">Os números ficam reservados e não podem ser vendidos novamente.</p><div class="formgrid"><div><label for="presaleDate">Data da pré-venda</label><input id="presaleDate" type="date" required value="' + esc(p.date) + '"></div><div><label for="presaleAmount">Valor total recebido (R$)</label><input id="presaleAmount" inputmode="decimal" required placeholder="0,00" value="' + (previous ? (p.amount / 100).toFixed(2).replace('.', ',') : '') + '"></div></div><p class="muted">Informe o valor já recebido por estes tickets. Use 0,00 se ainda não houve pagamento e edite quando receber.</p><label for="presaleMethod">Forma de pagamento</label><select id="presaleMethod">' + payments.map(m => '<option ' + (m === p.method ? 'selected' : '') + '>' + esc(m) + '</option>').join('') + '</select><label for="presaleDelivery">Como o cliente recebe?</label><select id="presaleDelivery"><option value="pickup">Retirada no evento</option><option value="delivery" ' + (p.delivery ? 'selected' : '') + '>Entrega no endereço do cliente</option></select><div id="presaleAddressArea"><label for="presaleAddress">Endereço completo de entrega</label><input id="presaleAddress" maxlength="500" placeholder="Rua, número, bairro e complemento" value="' + esc(p.address) + '"></div><label for="presalePhone">Telefone do cliente (opcional)</label><input id="presalePhone" type="tel" maxlength="40" value="' + esc(p.phone) + '"><p id="presaleError" class="danger" role="alert" style="margin-top:12px"></p><div class="row" style="margin-top:16px"><button class="primary" id="presaleSubmit">Salvar pré-venda</button><button type="button" id="presaleClose">Voltar</button></div></form>');
   $('presaleAddressArea').insertAdjacentHTML('beforeend', '<label for="presaleMaps">Link da localização no Google Maps (ou coordenadas)</label><input id="presaleMaps" maxlength="2000" placeholder="https://maps.google.com/?q=latitude,longitude" value="' + esc(p.mapsUrl || '') + '"><p class="muted">Informe o endereço completo ou a localização enviada pelo cliente. Links com coordenadas permitem sugerir a ordem da rota.</p>');
+  const ticketProducts = state.products.filter(product => product.ticket);
+  const selectedProduct = ticketProducts.find(product => product.id === p.ticketProduct) || (ticketProducts.length === 1 ? ticketProducts[0] : null);
+  const initialUnitPrice = p.ticketUnitPrice || selectedProduct?.price;
+  $('presaleNumbers').placeholder = 'Ex.: 1-10, 15, 20-22';
+  $('presaleNumbers').insertAdjacentHTML('afterend', '<p class="muted">1-10 inclui todos os tickets de 1 até 10. Você também pode combinar intervalos e números separados.</p><label for="presaleTicketProduct">Vale usado para calcular o preço</label><select id="presaleTicketProduct"><option value="">Definir valor unitário manualmente</option>' + ticketProducts.map(product => '<option value="' + esc(product.id) + '" ' + (product.id === selectedProduct?.id ? 'selected' : '') + '>' + esc(product.name) + ' · ' + money(product.price) + '</option>').join('') + '</select><label for="presaleUnitPrice">Valor de cada ticket (R$)</label><input id="presaleUnitPrice" inputmode="decimal" placeholder="0,00" value="' + (initialUnitPrice ? (initialUnitPrice / 100).toFixed(2).replace('.', ',') : '') + '"><p id="presaleCalculation" class="muted" aria-live="polite" style="margin-top:10px"></p><button type="button" id="presaleUseCalculated" class="small">Usar valor calculado no recebimento</button>');
+  // Abrir uma venda antiga não deve modificar um recebimento parcial ou com desconto.
+  let automaticAmount = !previous || (initialUnitPrice && p.amount === p.numbers.length * initialUnitPrice);
+  const updateCalculation = () => {
+    if (!$('presaleNumbers').value.trim()) { $('presaleCalculation').textContent = 'Informe os tickets para calcular a quantidade e o valor.'; return; }
+    try {
+      const numbers = parsePresaleNumbers($('presaleNumbers').value), unit = parseMoney($('presaleUnitPrice').value);
+      if (!Number.isSafeInteger(unit) || unit <= 0) { $('presaleCalculation').textContent = numbers.length + ' tickets. Escolha o vale ou informe o valor de cada ticket para calcular.'; return; }
+      const total = presaleCalculatedAmount(numbers, unit);
+      $('presaleCalculation').textContent = numbers.length + ' tickets × ' + money(unit) + ' = ' + money(total) + (automaticAmount ? ' · Valor recebido preenchido automaticamente.' : ' · O valor recebido foi mantido para permitir desconto ou pagamento parcial.');
+      if (automaticAmount) $('presaleAmount').value = (total / 100).toFixed(2).replace('.', ',');
+    } catch (error) { $('presaleCalculation').textContent = error.message; }
+  };
+  $('presaleNumbers').oninput = updateCalculation;
+  $('presaleUnitPrice').oninput = () => { $('presaleTicketProduct').value = ''; updateCalculation(); };
+  $('presaleTicketProduct').onchange = () => { const product = ticketProducts.find(product => product.id === $('presaleTicketProduct').value); if (product) $('presaleUnitPrice').value = (product.price / 100).toFixed(2).replace('.', ','); updateCalculation(); };
+  $('presaleAmount').oninput = () => { automaticAmount = false; updateCalculation(); };
+  $('presaleUseCalculated').onclick = () => { automaticAmount = true; updateCalculation(); };
+  updateCalculation();
   const updateDelivery = () => { const delivery = $('presaleDelivery').value === 'delivery'; $('presaleAddressArea').hidden = !delivery; $('presaleAddress').required = false; };
   $('presaleDelivery').onchange = updateDelivery;
   $('presaleClose').onclick = () => $('modal').close();
@@ -92,6 +123,9 @@ function editPresale(id) {
       if (duplicate !== undefined) throw Error('Ticket #' + duplicate + ' já vendido ou reservado. Confira a numeração.');
       const delivery = $('presaleDelivery').value === 'delivery';
       const record = {...previous, id:previous?.id || uid(), mapsUrl:$('presaleMaps').value.trim(), customer:$('presaleCustomer').value.trim(), seller:$('presaleSeller').value.trim(), numbers, amount, method:$('presaleMethod').value, date:$('presaleDate').value, delivery, address:delivery ? $('presaleAddress').value.trim() : '', phone:$('presalePhone').value.trim(), cancelled:false};
+      const unitPrice = parseMoney($('presaleUnitPrice').value);
+      if (Number.isSafeInteger(unitPrice) && unitPrice > 0) { record.ticketUnitPrice = unitPrice; record.ticketProduct = $('presaleTicketProduct').value; }
+      else { delete record.ticketUnitPrice; delete record.ticketProduct; }
       if (record.mapsUrl && !MapsLocation.parse(record.mapsUrl)) throw Error('Cole um link válido do Google Maps ou coordenadas no formato latitude,longitude.');
       if (!record.customer || !record.seller || (delivery && !record.address && !record.mapsUrl)) throw Error('Preencha cliente, vendedor e endereço de entrega.');
       $('presaleSubmit').disabled = true;
