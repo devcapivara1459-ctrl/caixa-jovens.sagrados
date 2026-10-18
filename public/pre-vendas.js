@@ -165,3 +165,26 @@ exportCSV = function () {
   const rows = reportSales().map(v => ['Venda no evento', v.at, '', v.operator, v.items.flatMap(i => i.numbers).join(', '), (v.total / 100).toFixed(2).replace('.', ','), v.method, '', '', '', v.cancelled ? 'Cancelada' : 'Confirmada']);
   savePresaleCSV('prestacao-de-contas.csv', [presaleCSVHeader, ...rows, ...presaleCSVRows()]);
 };
+
+function reportPreviewLink(type, source = 'all') {
+  const link = document.createElement('a');
+  link.className = 'report-link';
+  link.textContent = type === 'detalhado' ? 'Relatório detalhado' : 'Relatório resumido';
+  link.href = '/relatorio.html?' + new URLSearchParams({tipo:type, caixa:source === 'pre-vendas' ? 'all' : reportBox, fonte:source});
+  link.target = '_blank';
+  link.rel = 'noopener';
+  return link;
+}
+const renderReportBeforePreview = renderReport;
+renderReport = function () {
+  renderReportBeforePreview();
+  $('printReport').replaceWith(reportPreviewLink('detalhado'), reportPreviewLink('resumido'));
+};
+const renderPresalesBeforePreview = renderPresales;
+renderPresales = function () {
+  renderPresalesBeforePreview();
+  $('presaleCSV').after(reportPreviewLink('detalhado', 'pre-vendas'), reportPreviewLink('resumido', 'pre-vendas'));
+};
+const reportLinkStyle = document.createElement('style');
+reportLinkStyle.textContent = '.report-link{display:inline-block;background:#822c3c;color:white;text-decoration:none;border-radius:10px;padding:12px 16px;font-weight:600}';
+document.head.append(reportLinkStyle);
