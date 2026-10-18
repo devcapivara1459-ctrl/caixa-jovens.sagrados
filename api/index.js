@@ -2,20 +2,37 @@ const http=require('http'),fs=require('fs'),path=require('path'),os=require('os'
 
 const validate=require('../validate.cjs'),{project,permitted}=require('../acesso.cjs');
 const store=require('../banco.cjs')(process.env.DATABASE_URL),auth=require('../autenticacao.cjs')(process.env.DATABASE_URL);
+const receipts=require('../comprovantes.cjs')(process.env.DATABASE_URL);
 const attempts=new Map();
 function reply(res,status,data,headers={}){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff',...headers});res.end(JSON.stringify(data));}
 function cookie(req){return (req.headers.cookie||'').split(';').map(s=>s.trim()).find(s=>s.startsWith('js_session='))?.slice(11)||'';}
-async function body(req){let data='',size=0;for await(const chunk of req){size+=chunk.length;if(size>20*1024*1024)throw Error('Arquivo muito grande.');data+=chunk.toString();}return JSON.parse(data||'{}');}
+async function body(req,limit=20*1024*1024){let data='',size=0;for await(const chunk of req){size+=chunk.length;if(size>limit)throw Object.assign(Error('Arquivo muito grande.'),{status:413});data+=chunk.toString();}try{return JSON.parse(data||'{}');}catch{throw Object.assign(Error('Dados inválidos.'),{status:400});}}
 const sessionCookie=value=>'js_session='+value+'; HttpOnly; SameSite=Strict; Path=/; '+(process.env.VERCEL?'Secure; ':'')+'Max-Age='+(value?43200:0);
 module.exports=async(req,res)=>{try{const url=new URL(req.url,'https://localhost');if(url.searchParams.has('route'))url.pathname='/api/'+url.searchParams.get('route');
 if(!url.pathname.startsWith('/api/'))return reply(res,404,{error:'Página não encontrada'});
 if(req.method==='POST'&&(req.headers['x-requested-with']!=='caixa'||(req.headers.origin&&req.headers.origin!==`${process.env.VERCEL?'https':'http'}://${req.headers.host}`)))return reply(res,403,{error:'Origem não autorizada.'});
 if(url.pathname==='/api/login'&&req.method==='POST'){const key=req.socket.remoteAddress,now=Date.now(),a=attempts.get(key);if(a&&a.until>now&&a.count>=8)return reply(res,429,{error:'Muitas tentativas. Aguarde 10 minutos.'});const data=await body(req);if(typeof data.username!=='string'||typeof data.password!=='string'||data.password.length>128)return reply(res,400,{error:'Informe usuário e senha.'});const result=await auth.login(data.username.trim(),data.password);if(!result){attempts.set(key,{count:a&&a.until>now?a.count+1:1,until:a&&a.until>now?a.until:now+600000});return reply(res,401,{error:'Usuário ou senha incorretos.'});}attempts.delete(key);return reply(res,200,{user:result.user},{'Set-Cookie':sessionCookie(result.token)});}
+if(url.pathname==='/api/phone-receipts'){
+ if(!['GET','POST'].includes(req.method))return reply(res,405,{error:'Operação não disponível.'});
+ const current=await store.get(),paired=await receipts.phone((req.headers.authorization||'').replace(/^Bearer /,''),current.state);
+ if(req.method==='GET')return reply(res,200,await receipts.list(current.state,paired.box,paired.session_id));
+ return reply(res,200,await receipts.upload(paired,current.state,await body(req,710000)));
+}
 const token=cookie(req),user=await auth.user(token);if(!user)return reply(res,401,{error:'Entre com seu usuário e senha.'});
+if(url.pathname==='/api/receipt-pair'&&req.method==='POST'){
+ const data=await body(req,1000),current=await store.get();
+ return reply(res,200,await receipts.pair(user,current.state,Number(data.box),`${process.env.VERCEL?'https':'http'}://${req.headers.host}`));
+}
+if(url.pathname==='/api/receipts'&&req.method==='GET'){
+ const current=await store.get();return reply(res,200,await receipts.notebook(user,current.state,Number(url.searchParams.get('box')),url.searchParams.get('session')));
+}
+if(url.pathname==='/api/receipt-image'&&req.method==='GET'){
+ const photo=await receipts.image(user,url.searchParams.get('id'));res.writeHead(200,{'Content-Type':'image/jpeg','Content-Length':photo.length,'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'none'; sandbox",'Content-Disposition':'inline; filename="comprovante.jpg"'});return res.end(photo);
+}
 if(url.pathname==='/api/me'&&req.method==='GET')return reply(res,200,{user});
 if(url.pathname==='/api/logout'&&req.method==='POST'){await auth.logout(token);return reply(res,200,{ok:true},{'Set-Cookie':sessionCookie('')});}
 if(url.pathname==='/api/password'&&req.method==='POST'){const data=await body(req);const check=await auth.login(user.username,data.current);if(!check)return reply(res,403,{error:'Senha atual incorreta.'});await auth.logout(check.token);await auth.password(user.id,data.password);return reply(res,200,{ok:true},{'Set-Cookie':sessionCookie('')});}
 if(url.pathname==='/api/users'){if(user.role!=='admin')return reply(res,403,{error:'Somente administradores gerenciam usuários.'});if(req.method==='GET')return reply(res,200,{users:await auth.list()});if(req.method==='POST'){const data=await body(req);try{await auth.add(data);}catch(e){return reply(res,400,{error:e.code==='23505'?'Esse usuário já existe.':e.message});}return reply(res,201,{ok:true});}}
 if(url.pathname==='/api/state'){if(req.method==='GET'){const current=await store.get();return reply(res,200,{revision:current.revision,state:project(current.state,user)});}if(req.method==='POST'){const data=await body(req),current=await store.get();if(data.revision!==current.revision)return reply(res,409,{revision:current.revision,state:project(current.state,user)});let next;try{next=permitted(current.state,data.state,user);validate(next);}catch(e){return reply(res,403,{error:e.message});}const result=await store.save(data.revision,next);return reply(res,result.ok?200:409,{revision:result.revision,state:project(result.state,user)});}}
 return reply(res,405,{error:'Operação não disponível.'});
-}catch(e){console.error('Falha de requisição: '+(e.code||e.name));if(!res.headersSent)reply(res,503,{error:'Não foi possível completar a operação. Confira a conexão e tente novamente.'});}};
+}catch(e){console.error('Falha de requisição: '+(e.code||e.name));if(!res.headersSent)reply(res,e.status||503,{error:e.status?e.message:'Não foi possível completar a operação. Confira a conexão e tente novamente.'});}};
