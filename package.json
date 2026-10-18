@@ -1,0 +1,8 @@
+{
+  "name": "caixa-jovens-sagrados-online",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "pg": "^8.16.3"
+  }
+}
