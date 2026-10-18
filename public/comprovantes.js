@@ -25,7 +25,7 @@ async function refreshReceiptScreen(){
   const data=await request('/api/receipts?box='+box+'&session='+encodeURIComponent(receiptSession));
   if(requestId!==receiptView||tab!=='receipts'||requestedBox!==box||requestedSession!==receiptSession||!$('receiptRows'))return;
   $('receiptStatus').textContent=data.pending?data.pending+' comprovante(s) pendente(s) de foto.':'Todos os comprovantes deste turno foram recebidos.';
-  $('receiptRows').innerHTML=data.sales.length?'<table><thead><tr><th>Pedido</th><th>Horário</th><th>Tickets</th><th>Valor</th><th>Foto</th></tr></thead><tbody>'+data.sales.map(s=>'<tr><td>#'+s.number+'</td><td>'+esc(new Date(s.at).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}))+'</td><td>'+esc(s.tickets.join(', ')||'Sem tickets')+'</td><td>'+money(s.total)+'</td><td>'+(s.received?'<a target="_blank" rel="noopener" href="/api/receipt-image?id='+encodeURIComponent(s.id)+'">Ver comprovante</a> · Recebido':'Pendente de foto')+'</td></tr>').join('')+'</tbody></table>':'<p class="empty">Nenhuma venda Pix neste turno.</p>';
+  $('receiptRows').innerHTML=data.sales.length?'<table><thead><tr><th>Pedido</th><th>Horário</th><th>Tickets</th><th>Valor</th><th>Foto / ações</th></tr></thead><tbody>'+data.sales.map(s=>{const sale=state.sales.find(v=>v.id===s.id);return '<tr><td>#'+s.number+'</td><td>'+esc(new Date(s.at).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}))+'</td><td>'+esc(s.tickets.join(', ')||'Sem tickets')+'</td><td>'+money(s.total)+'</td><td><div class="row">'+(s.received?'<button class="small" data-photo="'+esc(s.id)+'">Ver foto Pix</button>':'<span class="muted">Pendente de foto</span>')+(sale&&canCancelSale(sale)?'<button class="small danger" data-cancel="'+esc(s.id)+'">Cancelar venda</button>':'')+'</div></td></tr>';}).join('')+'</tbody></table>':'<p class="empty">Nenhuma venda Pix neste turno.</p>';
  }catch(e){if(requestId===receiptView&&$('receiptStatus'))$('receiptStatus').textContent=e.message+' Use Atualizar para tentar novamente.';}
 }
 async function connectReceiptPhone(){
@@ -41,3 +41,12 @@ setInterval(async()=>{
  if(receiptLoading||!currentUser||document.hidden||tab!=='receipts')return;
  receiptLoading=true;try{await refreshReceiptScreen();}finally{receiptLoading=false;}
 },8000);
+function viewPixPhoto(id){
+ const sale=state.sales.find(s=>s.id===id);if(!sale)return;
+ showDialog('<div class="row" style="justify-content:space-between"><h2>Foto Pix · Pedido #'+sale.number+'</h2><button id="closePixPhoto" aria-label="Fechar foto">Fechar</button></div><p class="muted">'+money(sale.total)+' · Caixa 0'+sale.box+(sale.cancelled?' · Venda cancelada':'')+'</p><p id="photoStatus" class="muted" role="status" style="margin:12px 0">Carregando foto…</p><img id="pixPhoto" alt="Comprovante Pix do pedido '+sale.number+'" style="display:block;max-width:100%;max-height:70vh;object-fit:contain;margin:12px auto" hidden><button id="retryPixPhoto" hidden>Tentar carregar novamente</button>');
+ const modal=$('modal');modal.style.maxWidth='1000px';modal.addEventListener('close',()=>{modal.style.maxWidth='';},{once:true});$('closePixPhoto').onclick=()=>modal.close();
+ const image=$('pixPhoto'),status=$('photoStatus'),retry=$('retryPixPhoto');
+ image.onload=()=>{image.hidden=false;status.textContent='';retry.hidden=true;};image.onerror=()=>{image.hidden=true;status.textContent='Foto indisponível. Ela pode ainda não ter sido enviada. Tente carregar novamente.';retry.hidden=false;};
+ const load=()=>{image.hidden=true;status.textContent='Carregando foto…';retry.hidden=true;image.src='/api/receipt-image?id='+encodeURIComponent(id)+'&t='+Date.now();};retry.onclick=load;load();
+}
+document.addEventListener('click',e=>{const button=e.target.closest('button[data-photo]');if(button)viewPixPhoto(button.dataset.photo);});
